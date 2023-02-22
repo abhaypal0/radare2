@@ -196,6 +196,83 @@ static int r2plugin_core_call(void *_core, const char *input) {
 }
 #endif
 
+static JSValue r2plugin_io(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+	JSRuntime *rt = JS_GetRuntime (ctx);
+	QjsContext *k = JS_GetRuntimeOpaque (rt);
+	RCore *core = k->core;
+
+	if (argc != 2) {
+		return JS_ThrowRangeError (ctx, "r2.plugin expects two arguments");
+	}
+
+	JSValueConst args[1] = {
+		JS_NewString (ctx, ""),
+	};
+	JSValue res = JS_Call (ctx, argv[1], JS_UNDEFINED, countof (args), args);
+
+	// check if res is an object
+	if (!JS_IsObject (res)) {
+		return JS_ThrowRangeError (ctx, "r2.plugin function must return an object");
+	}
+
+	RIOPlugin *ap = R_NEW0 (RIOPlugin);
+	if (!ap) {
+		return JS_ThrowRangeError (ctx, "heap stuff");
+	}
+	JSValue name = JS_GetPropertyStr (ctx, res, "name");
+	size_t namelen;
+	const char *nameptr = JS_ToCStringLen2 (ctx, &namelen, name, false);
+	if (nameptr) {
+		ap->name = strdup (nameptr);
+	} else {
+		R_LOG_WARN ("r2.plugin requires the function to return an object with the `name` field");
+		return JS_NewBool (ctx, false);
+	}
+	JSValue desc = JS_GetPropertyStr (ctx, res, "desc");
+	const char *descptr = JS_ToCStringLen2 (ctx, &namelen, desc, false);
+	if (descptr) {
+		ap->desc = strdup (descptr);
+	}
+	JSValue license = JS_GetPropertyStr (ctx, res, "license");
+	const char *licenseptr = JS_ToCStringLen2 (ctx, &namelen, license, false);
+	if (licenseptr) {
+		ap->license = strdup (licenseptr);
+	}
+	JSValue func = JS_GetPropertyStr (ctx, res, "call");
+	if (!JS_IsFunction (ctx, func)) {
+		R_LOG_WARN ("r2.plugin requires the function to return an object with the `call` field to be a function");
+		// return JS_ThrowRangeError (ctx, "r2.plugin requires the function to return an object with the `call` field to be a function");
+		return JS_NewBool (ctx, false);
+	}
+
+	QjsContext *qc = qjsctx_find (core, ap->name);
+	if (qc) {
+		R_LOG_WARN ("r2.plugin with name %s is already registered", ap->name);
+		free ((char*)ap->name);
+		free (ap);
+		// return JS_ThrowRangeError (ctx, "r2.plugin core already registered (only one exists)");
+		return JS_NewBool (ctx, false);
+	}
+	if (Gplug >= MAXPLUGS) {
+		R_LOG_WARN ("Maximum number of plugins loaded! this is a limitation induced by the");
+		return JS_NewBool (ctx, false);
+	}
+	qc = qjsctx_add (core, nameptr, ctx, func);
+	ap->call = Gcalls[Gplug];
+	GcallsData[Gplug] = qc;
+	Gplug++;
+
+	int ret = -1;
+	RLibStruct *lib = R_NEW0 (RLibStruct);
+	if (lib) {
+		lib->type = R_LIB_TYPE_CORE;
+		lib->data = ap;
+		lib->version = R2_VERSION;
+		ret = r_lib_open_ptr (core->lib, nameptr, NULL, lib);
+	}
+	return JS_NewBool (ctx, ret == 0);
+}
+
 static JSValue r2plugin_core(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
 	JSRuntime *rt = JS_GetRuntime (ctx);
 	QjsContext *k = JS_GetRuntimeOpaque (rt);
@@ -281,10 +358,14 @@ static JSValue r2plugin(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 			// { name: string, call: function, license: string, desc: string }
 			// JSValue val =
 			return r2plugin_core (ctx, this_val, argc, argv);
-		} else {
-			// invalid throw exception here
-			return JS_ThrowRangeError(ctx, "invalid r2plugin type");
 		}
+		if (!strcmp (n, "io")) {
+			// { name: string, call: function, license: string, desc: string }
+			// JSValue val =
+			return r2plugin_io (ctx, this_val, argc, argv);
+		}
+		// invalid throw exception here
+		return JS_ThrowRangeError(ctx, "invalid r2plugin type");
 	}
 	return JS_NewBool (ctx, false);
 }
